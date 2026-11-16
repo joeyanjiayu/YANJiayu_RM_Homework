@@ -1,0 +1,4 @@
+SWCLK      PA14  <->  PA0
+SWDIO      PA13  <->  PA2
+UART7 TX   PE8
+UART7 RX   PE7
