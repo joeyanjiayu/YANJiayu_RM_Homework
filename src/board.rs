@@ -4,7 +4,7 @@ use embassy_stm32::{
     Config, Peri, Peripherals, bind_interrupts,
     can::{
         Can, CanConfigurator, IT0InterruptHandler, IT1InterruptHandler,
-        config::{FrameTransmissionConfig, NominalBitTiming},
+        config::{DataBitTiming,FrameTransmissionConfig, NominalBitTiming},
     },
     peripherals,
     rcc::{
@@ -68,17 +68,39 @@ pub fn can1(
     tx: Peri<'static, peripherals::PD1>,
 ) -> Can<'static> {
     let mut can = CanConfigurator::new(fdcan, rx, tx, CanIrqs);
+
     // 1 Mbit/s, 75% sample point. Segment lengths are in time quanta.
-    let timing = NominalBitTiming {
+    let nominal = NominalBitTiming {
         prescaler: NonZeroU16::new(1).unwrap(),
         seg1: NonZeroU8::new(59).unwrap(),
         seg2: NonZeroU8::new(20).unwrap(),
         sync_jump_width: NonZeroU8::new(20).unwrap(),
     };
+    // 来源：模仿上一个模板，数字自己配出
+    // transceiver_delay_compensation 在 0.60 中不生效————AI提示.
+    let data = DataBitTiming {
+        transceiver_delay_compensation: false,
+        prescaler: NonZeroU16::new(1).unwrap(),
+        seg1: NonZeroU8::new(12).unwrap(),
+        seg2: NonZeroU8::new(3).unwrap(),
+        sync_jump_width: NonZeroU8::new(3).unwrap(),
+    };
+
+    // 自行添加set_data_bit_timing 与 AllowFdCanAndBRS 
     let config = can
         .config()
-        .set_nominal_bit_timing(timing)
-        .set_frame_transmit(FrameTransmissionConfig::ClassicCanOnly);
+        .set_nominal_bit_timing(nominal)
+        .set_data_bit_timing(data)
+        .set_frame_transmit(FrameTransmissionConfig::AllowFdCanAndBRS);
     can.set_config(config);
+
+    let fdcan_regs = embassy_stm32::pac::FDCAN1;
+    fdcan_regs.dbtp().modify(|w| w.set_tdc(true));
+    fdcan_regs.tdcr().write(|w| {
+        //数据手册
+        w.set_tdco(0);
+        //数据手册
+        w.set_tdcf(12);
+    });
     can.into_normal_mode()
 }

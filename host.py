@@ -36,7 +36,8 @@ def main():
             else:
                 command = {"ping": "PING", "swd": "SWD ID", "can-recv": "CAN RX"}[args.command]
             port.write((command + "\n").encode("ascii"))
-            reply = port.readline(96).decode("ascii", errors="replace").strip()
+            # 来源：模板代码，容量自行调整（96 -> 160）
+            reply = port.readline(160).decode("ascii", errors="replace").strip()
             if not reply:
                 parser.exit(1, "No response. Check that this is the control interface.\n")
             print(reply)

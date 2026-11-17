@@ -1,12 +1,15 @@
 use core::fmt::Write;
-use embassy_stm32::can::{Can, Frame};
+// 来源：自行修改。模板原为 use embassy_stm32::can::{Can, Frame};
+use embassy_stm32::can::frame::{FdFrame, Header};
+use embassy_stm32::can::Can;
 use embassy_time::{Duration, with_timeout};
 use embedded_can::{Frame as _, Id};
 use heapless::String;
 
 use crate::swd::Swd;
 
-type Reply = String<63>;
+// 来源：自行确定容量。模板原为 String<63>
+type Reply = String<256>;
 
 pub struct Line {
     bytes: [u8; 96],
@@ -63,47 +66,77 @@ pub async fn execute(command: &str, can: &mut Can<'_>, swd: &mut Option<Swd>) ->
             let Some(frame) = parse_frame(id, hex) else {
                 return fixed("ERR FRAME\n");
             };
-            return match with_timeout(Duration::from_millis(100), can.write(&frame)).await {
+            // 来源：自行修改。模板原为 can.write(&frame)；
+            return match with_timeout(Duration::from_millis(100), can.write_fd(&frame)).await {
                 Ok(None) => fixed("OK QUEUED\n"),
                 _ => fixed("ERR CAN TX\n"),
             };
         }
         (Some("CAN"), Some("RX")) if words.next().is_none() => {
-            let envelope = match with_timeout(Duration::from_millis(100), can.read()).await {
-                Ok(Ok(frame)) => frame,
+            // 来源：AI检查我之后，从单路变成双路轮询，以解决遇到收不到FD帧超时报错的问题
+            match with_timeout(Duration::from_millis(100), can.read_fd()).await {
+                Ok(Ok(envelope)) => {
+                    let frame = envelope.frame;
+                    let Id::Standard(id) = *frame.id() else {
+                        return fixed("ERR UNSUPPORTED_FRAME\n");
+                    };
+                    if frame.is_remote_frame() {
+                        return fixed("ERR UNSUPPORTED_FRAME\n");
+                    }
+                    write!(out, "OK RX {:03X} ", id.as_raw()).expect("CAN prefix fits");
+                    if frame.data().is_empty() {
+                        out.push('-').expect("empty payload fits");
+                    }
+                    for byte in frame.data() {
+                        write!(out, "{byte:02X}").expect("64-byte payload fits");
+                    }
+                    out.push('\n').expect("line ending fits");
+                }
                 Ok(Err(_)) => return fixed("ERR CAN RX\n"),
-                Err(_) => return fixed("EMPTY\n"),
-            };
-            let frame = envelope.frame;
-            let Id::Standard(id) = *frame.id() else {
-                return fixed("ERR UNSUPPORTED_FRAME\n");
-            };
-            if frame.is_remote_frame() {
-                return fixed("ERR UNSUPPORTED_FRAME\n");
+                Err(_) => match with_timeout(Duration::from_millis(100), can.read()).await {
+                    Ok(Ok(envelope)) => {
+                        let frame = envelope.frame;
+                        let Id::Standard(id) = *frame.id() else {
+                            return fixed("ERR UNSUPPORTED_FRAME\n");
+                        };
+                        if frame.is_remote_frame() {
+                            return fixed("ERR UNSUPPORTED_FRAME\n");
+                        }
+                        write!(out, "OK RX {:03X} ", id.as_raw()).expect("CAN prefix fits");
+                        if frame.data().is_empty() {
+                            out.push('-').expect("empty payload fits");
+                        }
+                        for byte in frame.data() {
+                            write!(out, "{byte:02X}").expect("8-byte payload fits");
+                        }
+                        out.push('\n').expect("line ending fits");
+                    }
+                    Ok(Err(_)) => return fixed("ERR CAN RX\n"),
+                    Err(_) => return fixed("EMPTY\n"),
+                },
             }
-            write!(out, "OK RX {:03X} ", id.as_raw()).expect("CAN prefix fits");
-            if frame.data().is_empty() {
-                out.push('-').expect("empty payload fits");
-            }
-            for byte in frame.data() {
-                write!(out, "{byte:02X}").expect("8-byte payload fits");
-            }
-            out.push('\n').expect("line ending fits");
         }
         _ => return fixed("ERR SYNTAX\n"),
     }
     out
 }
 
-fn parse_frame(id: &str, payload: &str) -> Option<Frame> {
-    let id = u16::from_str_radix(id, 16).ok()?;
-    let mut bytes = [0; 8];
+// 来源：模板为 Option<Frame> 与 [0; 8] / len() > 16 /
+fn parse_frame(id: &str, payload: &str) -> Option<FdFrame> {
+    let raw_id = u16::from_str_radix(id, 16).ok()?;
+    let can_id = embedded_can::StandardId::new(raw_id)?.into();
+    let mut bytes = [0; 64];
     let payload = if payload == "-" { "" } else { payload };
-    if !payload.is_ascii() || payload.len() > 16 || !payload.len().is_multiple_of(2) {
+    if !payload.is_ascii() || payload.len() > 128 || !payload.len().is_multiple_of(2) {
         return None;
     }
     for (i, byte) in bytes[..payload.len() / 2].iter_mut().enumerate() {
         *byte = u8::from_str_radix(&payload[i * 2..i * 2 + 2], 16).ok()?;
     }
-    Frame::new_standard(id, &bytes[..payload.len() / 2]).ok()
+    let data = &bytes[..payload.len() / 2];
+    if data.len() <= 8 {
+        FdFrame::new(Header::new(can_id, data.len() as u8, false), data).ok()
+    } else {
+        FdFrame::new(Header::new_fd(can_id, data.len() as u8, false, true), data).ok()
+    }
 }
