@@ -1,0 +1,17 @@
+实现说明与对端配置
+
+1，入口：
+    a.`src/main.rs`的`#[embassy_executor::main] async fn main`
+    b.`src/board.rs`的 `pub fn can1(...)`位时序，FD/BRS、TDC配置
+    c.`src/protocol.rs` 的 `pub async fn execute(...)`（`CAN TX`/`CAN RX`）
+    d. `src/wiring.rs` 的 `pub fn configure(...)`（USB、UART7、SWD、CAN）
+
+2,数据路径：
+    A.发送：ASCII hex -> protocol.rs::parse_frame -> 构造 FdFrame -> can.write_fd() -> FDCAN Message RAM 的 Tx Buffer -> Tx Handler 搬至 CAN 内核发出 -> 仲裁段 1 Mbit/s / 数据段 5 Mbit/s
+    B.接收：总线 -> FDCAN Message RAM 的 Rx FIFO -> can.read_fd() -> Reply -> 经 USB CDC-ACM -> host.py
+
+3,对端配置：
+    A.对端支持CAN FD
+    B.收发器为MCP2542FD
+    C.TDC=1， TDCO=0mtq, TDCF=12mtq
+    D.帧类型：经典CAN帧和CAN FD帧
